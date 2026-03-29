@@ -205,10 +205,8 @@ async function clickByText(page, texts, timeout = 8000) {
 
 // ── Handle Google OAuth popup ─────────────────────────────────────────────────
 async function handleGoogleOAuthPopup(browser, page, email, password) {
-  // Wait for a new tab/popup to open
   let popup = null;
 
-  // Listen for new page
   const popupPromise = new Promise((resolve) => {
     browser.once('targetcreated', async target => {
       const newPage = await target.page();
@@ -216,15 +214,12 @@ async function handleGoogleOAuthPopup(browser, page, email, password) {
     });
   });
 
-  // Also check if it opened in same tab (some OAuth flows redirect in place)
-  const currentUrl = page.url();
   popup = await Promise.race([
     popupPromise,
-    new Promise(resolve => setTimeout(() => resolve(null), 5000))
+    new Promise(resolve => setTimeout(() => resolve(null), 8000))
   ]);
 
   if (!popup) {
-    // Check if current page navigated to Google
     await delay(2000);
     const newUrl = page.url();
     if (newUrl.includes('google') || newUrl.includes('accounts')) {
@@ -235,10 +230,8 @@ async function handleGoogleOAuthPopup(browser, page, email, password) {
     }
   }
 
-  // Wait for Google login page to load
   try { await popup.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }); } catch (e) {}
   await delay(2000);
-
   console.log('OAuth popup URL:', popup.url());
 
   // Fill email
@@ -248,7 +241,7 @@ async function handleGoogleOAuthPopup(browser, page, email, password) {
       await popup.click(sel, { clickCount: 3 });
       await popup.type(sel, email, { delay: 80 });
       await popup.keyboard.press('Enter');
-      await delay(2500);
+      await delay(3000);
       break;
     } catch (e) {}
   }
@@ -265,23 +258,57 @@ async function handleGoogleOAuthPopup(browser, page, email, password) {
     } catch (e) {}
   }
 
-  // Click Allow/Continue if shown
-  await delay(2000);
+  // Click Allow — wait longer
+  await delay(3000);
   try {
-    const allowBtns = await popup.$x('//button[contains(., "Allow")] | //button[contains(., "Continue")] | //button[contains(., "Confirm")]');
+    const allowBtns = await popup.$x(
+      '//button[contains(., "Allow")] | //button[contains(., "Continue")] | //button[contains(., "Confirm")]'
+    );
     if (allowBtns.length > 0) {
       await allowBtns[0].click();
-      await delay(2000);
+      console.log('Clicked Allow button');
+      await delay(4000);
     }
   } catch (e) {}
 
-  // Close popup if it's separate from main page
+  // Wait for popup to close naturally
+  try { await popup.waitForNavigation({ waitUntil: 'networkidle2', timeout: 10000 }); } catch (e) {}
+
+  // Close popup if still open
   if (popup !== page) {
-    try { await popup.close(); } catch (e) {}
+    try {
+      const isClosed = popup.isClosed ? popup.isClosed() : false;
+      if (!isClosed) await popup.close();
+    } catch (e) {}
   }
 
-  await delay(2000);
-  sendStatus(`✓ Google OAuth completed for ${email}`, 'success');
+  // Wait for Smartlead to process the connection
+  sendStatus(`Waiting for Smartlead to save ${email}...`, 'info');
+  await delay(6000);
+
+  // Reload accounts page and verify
+  await page.goto('https://app.smartlead.ai/app/email-accounts/emails', { waitUntil: 'networkidle2', timeout: 30000 });
+  await delay(3000);
+
+  const confirmed = await page.evaluate((email) => {
+    return document.body.innerText.toLowerCase().includes(email.toLowerCase());
+  }, email);
+
+  if (confirmed) {
+    sendStatus(`✓ Confirmed: ${email} saved in Smartlead`, 'success');
+  } else {
+    await delay(5000);
+    await page.reload({ waitUntil: 'networkidle2' });
+    await delay(2000);
+    const retry = await page.evaluate((email) => {
+      return document.body.innerText.toLowerCase().includes(email.toLowerCase());
+    }, email);
+    if (retry) {
+      sendStatus(`✓ Confirmed: ${email} saved in Smartlead`, 'success');
+    } else {
+      sendStatus(`⚠ ${email} OAuth done but not found in list — may need manual check`, 'warn');
+    }
+  }
 }
 
 // ── /run ─────────────────────────────────────────────────────────────────────
